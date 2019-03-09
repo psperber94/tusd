@@ -215,6 +215,8 @@ func copyOutput(r io.Reader) {
 func (store MdfStore) FinishUpload(id string) error {
 	fmt.Println("File Upload with Id: ", id, " finished")
 
+	time.sleep(500 * time.Millisecond)
+
 	converter := exec.Command("python",store.ConverterPath, store.binPath(id))
 	stdout, err := converter.StdoutPipe()
 	if err != nil {
