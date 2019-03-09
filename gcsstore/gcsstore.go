@@ -22,8 +22,8 @@ import (
 	"sync/atomic"
 
 	"cloud.google.com/go/storage"
-	"github.com/tus/tusd"
-	"github.com/tus/tusd/uid"
+	"github.com/psperber94/tusd"
+	"github.com/psperber94/tusd/uid"
 )
 
 // See the tusd.DataStore interface for documentation about the different

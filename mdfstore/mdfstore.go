@@ -3,8 +3,8 @@ package mdfstore
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/tus/tusd"
-	"github.com/tus/tusd/uid"
+	"github.com/psperber94/tusd"
+	"github.com/psperber94/tusd/uid"
 	"bufio"
 	"io"
 	"io/ioutil"
