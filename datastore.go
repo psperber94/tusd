@@ -25,6 +25,8 @@ type FileInfo struct {
 	// ordered slice containing the ids of the uploads of which the final upload
 	// will consist after concatenation.
 	PartialUploads []string
+	
+	CertSubject string
 }
 
 type DataStore interface {
