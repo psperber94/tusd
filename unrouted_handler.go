@@ -285,7 +285,7 @@ func (handler *UnroutedHandler) PostFile(w http.ResponseWriter, r *http.Request)
 
 	// Parse metadata
 	meta := ParseMetadataHeader(r.Header.Get("Upload-Metadata"))
-	certSubj := ParseMetadataHeader(r.Header.Get("X-Cert"))
+	certSubj := r.Header.Get("X-Cert")
 
 	info := FileInfo{
 		Size:           size,
