@@ -26,7 +26,7 @@ type FileInfo struct {
 	// will consist after concatenation.
 	PartialUploads []string
 	
-	CertSubject MetaData
+	CertSubject string
 }
 
 type DataStore interface {
