@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"plugin"
 
-	"github.com/tus/tusd"
+	"github.com/psperber94/tusd"
 )
 
 type PluginHookHandler interface {
