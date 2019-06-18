@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/net/context"
 )
 
 const UploadLengthDeferred = "1"
@@ -70,6 +72,7 @@ var (
 	ErrModifyFinal                      = NewHTTPError(errors.New("modifying a final upload is not allowed"), http.StatusForbidden)
 	ErrUploadLengthAndUploadDeferLength = NewHTTPError(errors.New("provided both Upload-Length and Upload-Defer-Length"), http.StatusBadRequest)
 	ErrInvalidUploadDeferLength         = NewHTTPError(errors.New("invalid Upload-Defer-Length header"), http.StatusBadRequest)
+	ErrUploadStoppedByServer            = NewHTTPError(errors.New("upload has been stopped by server"), http.StatusBadRequest)
 )
 
 // UnroutedHandler exposes methods to handle requests as part of the tus protocol,
@@ -169,7 +172,7 @@ func (handler *UnroutedHandler) Middleware(h http.Handler) http.Handler {
 
 		handler.log("RequestIncoming", "method", r.Method, "path", r.URL.Path)
 
-		go handler.Metrics.incRequestsTotal(r.Method)
+		handler.Metrics.incRequestsTotal(r.Method)
 
 		header := w.Header()
 
@@ -310,7 +313,7 @@ func (handler *UnroutedHandler) PostFile(w http.ResponseWriter, r *http.Request)
 	url := handler.absFileURL(r, id)
 	w.Header().Set("Location", url)
 
-	go handler.Metrics.incUploadsCreated()
+	handler.Metrics.incUploadsCreated()
 	handler.log("UploadCreated", "id", id, "size", i64toa(size), "url", url)
 
 	if handler.config.NotifyCreatedUploads {
@@ -537,14 +540,46 @@ func (handler *UnroutedHandler) writeChunk(id string, info FileInfo, w http.Resp
 		// Limit the data read from the request's body to the allowed maximum
 		reader := io.LimitReader(r.Body, maxSize)
 
+		// We use a context object to allow the hook system to cancel an upload
+		uploadCtx, stopUpload := context.WithCancel(context.Background())
+		info.stopUpload = stopUpload
+		// terminateUpload specifies whether the upload should be deleted after
+		// the write has finished
+		terminateUpload := false
+		// Cancel the context when the function exits to ensure that the goroutine
+		// is properly cleaned up
+		defer stopUpload()
+
+		go func() {
+			// Interrupt the Read() call from the request body
+			<-uploadCtx.Done()
+			terminateUpload = true
+			r.Body.Close()
+		}()
+
 		if handler.config.NotifyUploadProgress {
-			var stop chan<- struct{}
-			reader, stop = handler.sendProgressMessages(info, reader)
-			defer close(stop)
+			var stopProgressEvents chan<- struct{}
+			reader, stopProgressEvents = handler.sendProgressMessages(info, reader)
+			defer close(stopProgressEvents)
 		}
 
 		var err error
 		bytesWritten, err = handler.composer.Core.WriteChunk(id, offset, reader)
+		if terminateUpload && handler.composer.UsesTerminater {
+			if terminateErr := handler.terminateUpload(id, info); terminateErr != nil {
+				// We only log this error and not show it to the user since this
+				// termination error is not relevant to the uploading client
+				handler.log("UploadStopTerminateError", "id", id, "error", terminateErr.Error())
+			}
+		}
+
+		// The error "http: invalid Read on closed Body" is returned if we stop the upload
+		// while the data store is still reading. Since this is an implementation detail,
+		// we replace this error with a message saying that the upload has been stopped.
+		if err == http.ErrBodyReadAfterClose {
+			err = ErrUploadStoppedByServer
+		}
+
 		if err != nil {
 			return err
 		}
@@ -555,7 +590,7 @@ func (handler *UnroutedHandler) writeChunk(id string, info FileInfo, w http.Resp
 	// Send new offset to client
 	newOffset := offset + bytesWritten
 	w.Header().Set("Upload-Offset", strconv.FormatInt(newOffset, 10))
-	go handler.Metrics.incBytesReceived(uint64(bytesWritten))
+	handler.Metrics.incBytesReceived(uint64(bytesWritten))
 	info.Offset = newOffset
 
 	return handler.finishUploadIfComplete(info)
@@ -579,7 +614,7 @@ func (handler *UnroutedHandler) finishUploadIfComplete(info FileInfo) error {
 			handler.CompleteUploads <- info
 		}
 
-		go handler.Metrics.incUploadsFinished()
+		handler.Metrics.incUploadsFinished()
 	}
 
 	return nil
@@ -737,19 +772,33 @@ func (handler *UnroutedHandler) DelFile(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	err = handler.composer.Terminater.Terminate(id)
+	err = handler.terminateUpload(id, info)
 	if err != nil {
 		handler.sendError(w, r, err)
 		return
 	}
 
 	handler.sendResp(w, r, http.StatusNoContent)
+}
+
+// terminateUpload passes a given upload to the DataStore's Terminater,
+// send the corresponding upload info on the TerminatedUploads channnel
+// and updates the statistics.
+// Note the the info argument is only needed if the terminated uploads
+// notifications are enabled.
+func (handler *UnroutedHandler) terminateUpload(id string, info FileInfo) error {
+	err := handler.composer.Terminater.Terminate(id)
+	if err != nil {
+		return err
+	}
 
 	if handler.config.NotifyTerminatedUploads {
 		handler.TerminatedUploads <- info
 	}
 
-	go handler.Metrics.incUploadsTerminated()
+	handler.Metrics.incUploadsTerminated()
+
+	return nil
 }
 
 // Send the error in the response body. The status code will be looked up in
@@ -785,7 +834,7 @@ func (handler *UnroutedHandler) sendError(w http.ResponseWriter, r *http.Request
 
 	handler.log("ResponseOutgoing", "status", strconv.Itoa(statusErr.StatusCode()), "method", r.Method, "path", r.URL.Path, "error", err.Error())
 
-	go handler.Metrics.incErrorsTotal(statusErr)
+	handler.Metrics.incErrorsTotal(statusErr)
 }
 
 // sendResp writes the header to w with the specified status code.
@@ -824,6 +873,7 @@ func (w *progressWriter) Write(b []byte) (int, error) {
 // It will stop sending these instances once the returned channel has been
 // closed. The returned reader should be used to read the request body.
 func (handler *UnroutedHandler) sendProgressMessages(info FileInfo, reader io.Reader) (io.Reader, chan<- struct{}) {
+	previousOffset := int64(0)
 	progress := &progressWriter{
 		Offset: info.Offset,
 	}
@@ -835,11 +885,17 @@ func (handler *UnroutedHandler) sendProgressMessages(info FileInfo, reader io.Re
 			select {
 			case <-stop:
 				info.Offset = atomic.LoadInt64(&progress.Offset)
-				handler.UploadProgress <- info
+				if info.Offset != previousOffset {
+					handler.UploadProgress <- info
+					previousOffset = info.Offset
+				}
 				return
 			case <-time.After(1 * time.Second):
 				info.Offset = atomic.LoadInt64(&progress.Offset)
-				handler.UploadProgress <- info
+				if info.Offset != previousOffset {
+					handler.UploadProgress <- info
+					previousOffset = info.Offset
+				}
 			}
 		}
 	}()

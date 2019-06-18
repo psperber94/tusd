@@ -4,7 +4,7 @@ metadata:
   name: tusd
   namespace: tus
 spec:
-  replicas: 2
+  replicas: 1
   template:
     metadata:
       labels:
@@ -16,26 +16,17 @@ spec:
               nodeSelectorTerms:
               - matchExpressions:
                 - key: cloud.google.com/gke-preemptible
-                  operator: Exists
-        podAntiAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-          - labelSelector:
-              matchExpressions:
-              - key: app
-                operator: In
-                values:
-                - tusd
-            topologyKey: kubernetes.io/hostname    
+                  operator: DoesNotExist   
       containers:
       - image: docker.io/tusproject/tusd:latest
         imagePullPolicy: Always
-        args: ["-s3-bucket","tusdtest.transloadit.com","-port=8080","-behind-proxy","-max-size=20000000000"]
+        args: ["-s3-bucket","tusdtest.transloadit.com","-port=8080","-behind-proxy","-max-size=20000000000","-timeout=6000"]
         name: tusd
         resources:
           limits:
             memory: "2Gi"
-          requests:
-            memory: "1Gi"
+          # requests:
+          #   memory: "1Gi"
         ports:
         - name: tusd-web
           containerPort: 8080

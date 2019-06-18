@@ -5,10 +5,10 @@ import (
 
 	"github.com/psperber94/tusd"
 	"github.com/psperber94/tusd/filestore"
+	"github.com/psperber94/tusd/gcsstore"
 	"github.com/psperber94/tusd/limitedstore"
 	"github.com/psperber94/tusd/memorylocker"
 	"github.com/psperber94/tusd/s3store"
-	"github.com/psperber94/tusd/gcsstore"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -56,6 +56,7 @@ func CreateComposer() {
 		stdout.Printf("Using 'gcs://%s' as GCS bucket for storage.\n", Flags.GCSBucket)
 
 		store := gcsstore.New(Flags.GCSBucket, service)
+		store.ObjectPrefix = Flags.GCSObjectPrefix
 		store.UseIn(Composer)
 
 		locker := memorylocker.New()

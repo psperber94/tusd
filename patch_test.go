@@ -458,10 +458,8 @@ func TestPatch(t *testing.T) {
 
 			writer.Close()
 
-			info = <-c
-			a.Equal("yes", info.ID)
-			a.Equal(int64(100), info.Size)
-			a.Equal(int64(18), info.Offset)
+			// No progress event is sent after the writer is closed
+			// because an event for 18 bytes was already emitted.
 		}()
 
 		(&httpTest{
@@ -483,6 +481,66 @@ func TestPatch(t *testing.T) {
 		// channel because another goroutine may still write to the channel.
 		<-time.After(10 * time.Millisecond)
 		close(handler.UploadProgress)
+
+		_, more := <-c
+		a.False(more)
+	})
+
+	SubTest(t, "StopUpload", func(t *testing.T, store *MockFullDataStore) {
+		gomock.InOrder(
+			store.EXPECT().GetInfo("yes").Return(FileInfo{
+				ID:     "yes",
+				Offset: 0,
+				Size:   100,
+			}, nil),
+			store.EXPECT().WriteChunk("yes", int64(0), NewReaderMatcher("first ")).Return(int64(6), http.ErrBodyReadAfterClose),
+			store.EXPECT().Terminate("yes").Return(nil),
+		)
+
+		handler, _ := NewHandler(Config{
+			DataStore:            store,
+			NotifyUploadProgress: true,
+		})
+
+		c := make(chan FileInfo)
+		handler.UploadProgress = c
+
+		reader, writer := io.Pipe()
+		a := assert.New(t)
+
+		go func() {
+			writer.Write([]byte("first "))
+
+			info := <-c
+			info.StopUpload()
+
+			// Wait a short time to ensure that the goroutine in the PATCH
+			// handler has received and processed the stop event.
+			<-time.After(10 * time.Millisecond)
+
+			// Assert that the "request body" has been closed.
+			_, err := writer.Write([]byte("second "))
+			a.Equal(err, io.ErrClosedPipe)
+
+			// Close the upload progress handler so that the main goroutine
+			// can exit properly after waiting for this goroutine to finish.
+			close(handler.UploadProgress)
+		}()
+
+		(&httpTest{
+			Method: "PATCH",
+			URL:    "yes",
+			ReqHeader: map[string]string{
+				"Tus-Resumable": "1.0.0",
+				"Content-Type":  "application/offset+octet-stream",
+				"Upload-Offset": "0",
+			},
+			ReqBody: reader,
+			Code:    http.StatusBadRequest,
+			ResHeader: map[string]string{
+				"Upload-Offset": "",
+			},
+		}).Run(handler, t)
 
 		_, more := <-c
 		a.False(more)

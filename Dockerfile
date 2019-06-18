@@ -1,4 +1,4 @@
-FROM golang:1.7-alpine AS builder
+FROM golang:1.12-alpine AS builder
 
 # Copy in the git repo from the build context
 COPY . /go/src/github.com/psperber94/tusd/
@@ -22,7 +22,7 @@ FROM alpine:3.8
 
 COPY --from=builder /go/bin/tusd /usr/local/bin/tusd
 
-RUN apk add --no-cache ca-certificates \
+RUN apk add --no-cache ca-certificates jq \
     && addgroup -g 1000 tusd \
     && adduser -u 1000 -G tusd -s /bin/sh -D tusd \
     && mkdir -p /srv/tusd-hooks \
@@ -33,3 +33,5 @@ WORKDIR /srv/tusd-data
 EXPOSE 1080
 ENTRYPOINT ["tusd"]
 CMD ["--hooks-dir","/srv/tusd-hooks"]
+
+USER tusd
